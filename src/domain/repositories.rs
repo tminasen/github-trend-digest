@@ -7,6 +7,7 @@ use async_trait::async_trait;
 
 use super::entities::{Repository, RepositoryInsight, TrendingSummary};
 use super::errors::AppResult;
+use super::failure::FailureReport;
 
 /// Trait for fetching trending repositories.
 ///
@@ -141,6 +142,23 @@ pub trait NotificationSender: Send + Sync {
         }
         Ok(())
     }
+}
+
+/// Trait for notifying the operator that a run failed.
+///
+/// Kept separate from [`NotificationSender`] (ISP): sending the digest and
+/// reporting a failure are different responsibilities with different callers.
+#[async_trait]
+pub trait FailureNotifier: Send + Sync {
+    /// Sends one failure report.
+    ///
+    /// # Arguments
+    /// - `report`: Already redacted description of the failure
+    ///
+    /// # Returns
+    /// - `Ok(())`: Report delivered
+    /// - `Err(AppError)`: Delivery failed (callers treat this as best-effort)
+    async fn notify_failure(&self, report: &FailureReport) -> AppResult<()>;
 }
 
 #[cfg(test)]

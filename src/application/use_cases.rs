@@ -3,6 +3,7 @@
 //! These use cases orchestrate domain objects and repository operations
 //! to implement the application's business logic. They follow the principles
 //! of Clean Architecture and hexagonal architecture.
+use std::fmt;
 use std::sync::Arc;
 
 use futures::stream::{self, StreamExt};
@@ -12,6 +13,54 @@ use crate::domain::{
     AiSummarizer, AppResult, GithubApiClient, NotificationSender, Repository, TrendingRepository,
     TrendingSummary,
 };
+
+/// Result of one digest run: how many repositories were fetched and which
+/// of them were summarized (and sent).
+#[derive(Debug, Clone)]
+pub struct DigestOutcome {
+    /// Number of trending repositories fetched.
+    pub fetched: usize,
+    /// Summaries that were generated and sent, in trending order.
+    pub summaries: Vec<TrendingSummary>,
+}
+
+/// Why a run produced no summaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmptyDigestReason {
+    /// Trending returned no repositories.
+    NoTrendingRepositories,
+    /// Every one of the `attempted` repositories failed to summarize.
+    AllSummariesFailed { attempted: usize },
+}
+
+impl fmt::Display for EmptyDigestReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoTrendingRepositories => {
+                write!(f, "No trending repositories found (0 fetched)")
+            }
+            Self::AllSummariesFailed { attempted } => write!(
+                f,
+                "All {attempted} repositories failed to summarize (0/{attempted} succeeded)"
+            ),
+        }
+    }
+}
+
+impl DigestOutcome {
+    /// Returns why no summaries were produced, or `None` when at least one was.
+    pub fn empty_reason(&self) -> Option<EmptyDigestReason> {
+        if !self.summaries.is_empty() {
+            None
+        } else if self.fetched == 0 {
+            Some(EmptyDigestReason::NoTrendingRepositories)
+        } else {
+            Some(EmptyDigestReason::AllSummariesFailed {
+                attempted: self.fetched,
+            })
+        }
+    }
+}
 
 /// Use case for fetching and summarizing trending repositories.
 ///
@@ -99,12 +148,37 @@ impl FetchAndSummarizeTrendingUseCase {
 
     /// Executes the use case to fetch and summarize trending repositories.
     ///
+    /// Delegates to [`Self::execute_outcome`] and returns only the summaries.
+    /// Use `execute_outcome` when the number of fetched repositories (`fetched`)
+    /// or the reason for an empty result is needed.
+    ///
     /// # Arguments
     /// - `language`: Optional language filter (e.g., "rust", "python")
     ///
     /// # Returns
     /// - `Ok(Vec<TrendingSummary>)`: List of trending summaries
     /// - `Err(AppError)`: Error if any step fails
+    ///
+    /// # Examples
+    /// ```ignore
+    /// let summaries = use_case.execute(Some("rust".to_string())).await?;
+    /// ```
+    pub async fn execute(&self, language: Option<String>) -> AppResult<Vec<TrendingSummary>> {
+        self.execute_outcome(language).await.map(|o| o.summaries)
+    }
+
+    /// Executes the use case and reports how many repositories were fetched.
+    ///
+    /// # Arguments
+    /// - `language`: Optional language filter (e.g., "rust", "python")
+    ///
+    /// # Returns
+    /// - `Ok(DigestOutcome)`:
+    ///   - `fetched`: number of trending repositories fetched
+    ///   - `summaries`: summaries that were generated and sent, in trending order
+    ///     (empty when nothing was fetched or every summary failed; see
+    ///     [`DigestOutcome::empty_reason`])
+    /// - `Err(AppError)`: Error if fetching or sending fails
     ///
     /// # Process Flow
     /// 1. Fetch trending repositories
@@ -118,9 +192,9 @@ impl FetchAndSummarizeTrendingUseCase {
     ///
     /// # Examples
     /// ```ignore
-    /// let summaries = use_case.execute(Some("rust".to_string())).await?;
+    /// let outcome = use_case.execute_outcome(Some("rust".to_string())).await?;
     /// ```
-    pub async fn execute(&self, language: Option<String>) -> AppResult<Vec<TrendingSummary>> {
+    pub async fn execute_outcome(&self, language: Option<String>) -> AppResult<DigestOutcome> {
         info!("Starting fetch and summarize trending use case");
         info!("Language filter: {:?}", language);
 
@@ -130,11 +204,15 @@ impl FetchAndSummarizeTrendingUseCase {
             .trending_repository
             .fetch_trending(language.clone())
             .await?;
-        info!("Fetched {} repositories", repositories.len());
+        let fetched = repositories.len();
+        info!("Fetched {} repositories", fetched);
 
         if repositories.is_empty() {
             warn!("No trending repositories found");
-            return Ok(vec![]);
+            return Ok(DigestOutcome {
+                fetched: 0,
+                summaries: vec![],
+            });
         }
 
         // Step 2: Enrich and summarize repositories concurrently.
@@ -176,7 +254,7 @@ impl FetchAndSummarizeTrendingUseCase {
             info!("Notifications sent successfully");
         }
 
-        Ok(summaries)
+        Ok(DigestOutcome { fetched, summaries })
     }
 
     /// Enriches a scraped repository with details from the GitHub API.
@@ -897,5 +975,135 @@ mod tests {
         assert!(result.is_ok());
         let summaries = result.unwrap();
         assert_eq!(summaries.len(), 0);
+    }
+
+    // ---- DigestOutcome / execute_outcome (T59-T64) ----
+
+    fn summary_of(name: &str) -> TrendingSummary {
+        TrendingSummary::new(
+            create_test_repository_named(name),
+            "S".to_string(),
+            vec![],
+            vec![],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn t59_empty_reason_no_trending_repositories() {
+        // Given
+        let outcome = DigestOutcome {
+            fetched: 0,
+            summaries: vec![],
+        };
+
+        // When
+        let reason = outcome.empty_reason();
+
+        // Then
+        assert_eq!(reason, Some(EmptyDigestReason::NoTrendingRepositories));
+    }
+
+    #[test]
+    fn t60_empty_reason_all_summaries_failed() {
+        // Given
+        let outcome = DigestOutcome {
+            fetched: 25,
+            summaries: vec![],
+        };
+
+        // When
+        let reason = outcome.empty_reason();
+
+        // Then
+        assert_eq!(
+            reason,
+            Some(EmptyDigestReason::AllSummariesFailed { attempted: 25 })
+        );
+    }
+
+    #[test]
+    fn t61_empty_reason_is_none_with_one_summary() {
+        // Given
+        let outcome = DigestOutcome {
+            fetched: 25,
+            summaries: vec![summary_of("repo1")],
+        };
+
+        // When / Then
+        assert_eq!(outcome.empty_reason(), None);
+    }
+
+    #[test]
+    fn t62_empty_reason_display() {
+        // Given / When / Then
+        assert_eq!(
+            EmptyDigestReason::NoTrendingRepositories.to_string(),
+            "No trending repositories found (0 fetched)"
+        );
+        assert_eq!(
+            EmptyDigestReason::AllSummariesFailed { attempted: 25 }.to_string(),
+            "All 25 repositories failed to summarize (0/25 succeeded)"
+        );
+    }
+
+    #[tokio::test]
+    async fn t63_execute_outcome_with_no_trending_returns_fetched_zero() {
+        // Given
+        let mut trending_repo = MockTrendingRepo::new();
+        trending_repo
+            .expect_fetch_trending()
+            .times(1)
+            .returning(|_| Ok(vec![]));
+        let mut notification_sender = MockNotificationSenderImpl::new();
+        notification_sender.expect_send_batch().times(0);
+        let use_case = FetchAndSummarizeTrendingUseCase::new(
+            Arc::new(trending_repo),
+            Arc::new(EchoGithubClient),
+            Arc::new(MockAiSummarizerImpl::new()),
+            Arc::new(notification_sender),
+        );
+
+        // When
+        let outcome = use_case.execute_outcome(None).await.unwrap();
+
+        // Then
+        assert_eq!(outcome.fetched, 0);
+        assert!(outcome.summaries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn t64_execute_outcome_when_all_summaries_fail_returns_fetched_and_no_summaries() {
+        // Given
+        let mut trending_repo = MockTrendingRepo::new();
+        trending_repo
+            .expect_fetch_trending()
+            .times(1)
+            .returning(|_| {
+                Ok(vec![
+                    create_test_repository_named("repo1"),
+                    create_test_repository_named("repo2"),
+                ])
+            });
+        let mut ai_summarizer = MockAiSummarizerImpl::new();
+        ai_summarizer
+            .expect_analyze()
+            .times(2)
+            .returning(|_| Err(crate::domain::AppError::AiServiceError("quota".into())));
+        let mut notification_sender = MockNotificationSenderImpl::new();
+        notification_sender.expect_send_batch().times(0);
+        let use_case = FetchAndSummarizeTrendingUseCase::new(
+            Arc::new(trending_repo),
+            Arc::new(EchoGithubClient),
+            Arc::new(ai_summarizer),
+            Arc::new(notification_sender),
+        );
+
+        // When
+        let outcome = use_case.execute_outcome(None).await.unwrap();
+
+        // Then
+        assert_eq!(outcome.fetched, 2);
+        assert!(outcome.summaries.is_empty());
     }
 }

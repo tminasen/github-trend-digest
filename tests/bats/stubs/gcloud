@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Test stub for gcloud. Records the call in $STUB_LOG and returns canned output.
+#   GCLOUD_STUB_LIST_JSON : stdout of `artifacts docker images list`
+#   GCLOUD_STUB_LIST_EXIT : exit code of `artifacts docker images list` (default 0)
+#   GCLOUD_STUB_FAIL_ON   : exit 1 when a `delete` call contains this string
+echo "gcloud $*" >>"${STUB_LOG:?STUB_LOG is required}"
+
+case " $* " in
+  *" images list "*)
+    printf '%s' "${GCLOUD_STUB_LIST_JSON:-[]}"
+    exit "${GCLOUD_STUB_LIST_EXIT:-0}"
+    ;;
+  *" images delete "*)
+    if [ -n "${GCLOUD_STUB_FAIL_ON:-}" ] && [[ "$*" == *"${GCLOUD_STUB_FAIL_ON}"* ]]; then
+      echo "stub: delete failed" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+esac
+exit 0

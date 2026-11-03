@@ -87,18 +87,24 @@ docker run --rm --env-file .env github-trending-summary rust
 docker run --rm github-trending-summary rust; echo "exit=$?"   # exit=1
 ```
 
-### Scheduled Execution (GitHub Actions)
+### Scheduled Execution (Cloud Run Jobs + Cloud Scheduler)
 
-The workflow `.github/workflows/cron.yml` ("Daily Trending Digest") runs twice a day at 08:00 JST and 18:00 JST (`timezone: 'Asia/Tokyo'`) with `cargo run --release`, once per language in the matrix (`rust` and all languages). Keep the matrix in sync with `languages` in `config/default.toml`.
+The digest runs as the Cloud Run Job `github-trend-digest`, started by Cloud Scheduler at 08:00 JST and 18:00 JST. The Job takes no arguments and covers all languages. The `Deploy Cloud Run Job` workflow (`.github/workflows/deploy.yml`) builds the image on every push to `main`, updates the Job (it does not run it), and deletes every image except the deployed one.
 
-**Register secrets** in your repository under `Settings > Secrets and variables > Actions`:
+Setup, secrets, the `GITHUB_TOKEN` (PAT) rotation and rollback are described in **[docs/DEPLOY_CLOUD_RUN.md](docs/DEPLOY_CLOUD_RUN.md)**.
 
-- `DISCORD_WEBHOOK_URL`: Discord webhook URL for notifications
-- `GEMINI_API_KEY`: Google Gemini API key
+**Run manually:**
 
-`GITHUB_TOKEN` is the built-in token provided by GitHub Actions, so you do not need to register it.
+```bash
+gcloud run jobs execute github-trend-digest --region=<REGION> --wait
+```
 
-**Run manually:** open the `Actions` tab, select `Daily Trending Digest`, and click `Run workflow`.
+**Failure notifications:** the app posts a failure message to Discord when
+
+- the run ends with an error (exit code 1), or
+- no summary was produced: Trending returned 0 repositories, or every summary failed. The exit code stays 0 in these two cases, so Cloud Run shows `Succeeded`; the Discord message is the only signal.
+
+Failures the app cannot report itself (container fails to start, secrets unreadable, timeout, OOM, Scheduler cannot start the Job, Discord outage, configuration error, panic, partial summary failures) are listed with ways to detect them in section 16 of the guide. The basic check is noticing that the 08:00 / 18:00 digest did not arrive.
 
 ## 4. Development Guidelines
 
@@ -139,6 +145,7 @@ The workflow `.github/workflows/cron.yml` ("Daily Trending Digest") runs twice a
 ## 6. Documentation
 
 - **[Quick Start](docs/QUICK_START.md)**: 5-minute setup guide
+- **[Cloud Run Jobs Deployment](docs/DEPLOY_CLOUD_RUN.md)**: Scheduled execution setup and operations
 - **[Setup Guide](docs/SETUP_DEV.md)**: Detailed development environment setup
 - **[Environment Files](docs/ENV_FILES.md)**: Environment file management and security best practices
 - **[Scraping Implementation](docs/SCRAPING_IMPLEMENTATION.md)**: GitHub Trending scraper technical details

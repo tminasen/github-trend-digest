@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::domain::TrendingSummary;
+use crate::domain::{FailureReport, TrendingSummary};
 
 pub(crate) const TITLE_LIMIT: usize = 256;
 pub(crate) const DESCRIPTION_LIMIT: usize = 4096;
@@ -17,6 +17,10 @@ pub(crate) const MAX_EMBED_BYTES: usize = 8000;
 pub(crate) const TOTAL_CHARS_PER_MESSAGE: usize = 6000;
 pub(crate) const EMBED_COLOR: u32 = 0x24292F;
 pub(crate) const FOOTER_TEXT: &str = "GitHub Trending";
+pub(crate) const FAILURE_EMBED_COLOR: u32 = 0xD73A49;
+pub(crate) const FAILURE_EMBED_TITLE: &str = "GitHub Trending digest failed";
+const FAILURE_EMBED_URL: &str = "https://github.com/trending";
+const EMPTY_FAILURE_MESSAGE: &str = "(no error message)";
 pub(crate) const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(1);
 pub(crate) const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
@@ -142,6 +146,43 @@ pub(crate) fn build_embed(summary: &TrendingSummary) -> DiscordEmbed {
     }
     embed.description = truncate_bytes(
         &truncate_chars(&description, description_max),
+        description_max_bytes,
+    );
+    embed
+}
+
+/// Converts a failure report into an embed that respects every Discord limit.
+pub(crate) fn build_failure_embed(report: &FailureReport) -> DiscordEmbed {
+    let mut fields = vec![build_field(
+        "Language",
+        report.language.as_deref().unwrap_or("all"),
+        true,
+    )];
+    if let Some(execution) = &report.execution {
+        fields.push(build_field("Execution", execution, true));
+    }
+
+    let mut embed = DiscordEmbed {
+        title: truncate_chars(FAILURE_EMBED_TITLE, TITLE_LIMIT),
+        url: FAILURE_EMBED_URL.to_string(),
+        description: String::new(),
+        color: FAILURE_EMBED_COLOR,
+        fields,
+        footer: DiscordEmbedFooter {
+            text: truncate_chars(FOOTER_TEXT, FOOTER_LIMIT),
+        },
+    };
+
+    // The description absorbs whatever room is left under the Discord budgets.
+    let description_max = DESCRIPTION_LIMIT.min(TOTAL_CHARS_PER_MESSAGE - embed.char_count());
+    let description_max_bytes = MAX_EMBED_BYTES - embed.byte_count();
+    let message = if report.message.trim().is_empty() {
+        EMPTY_FAILURE_MESSAGE
+    } else {
+        report.message.as_str()
+    };
+    embed.description = truncate_bytes(
+        &truncate_chars(message, description_max),
         description_max_bytes,
     );
     embed
@@ -656,5 +697,107 @@ mod tests {
     #[test]
     fn t25_parse_retry_after_negative_is_zero() {
         assert_eq!(parse_retry_after(r#"{"retry_after":-1}"#), Duration::ZERO);
+    }
+
+    // ---- build_failure_embed (T39-T42, P7) ----
+
+    fn failure_report(message: &str) -> FailureReport {
+        FailureReport {
+            message: message.to_string(),
+            language: None,
+            execution: None,
+        }
+    }
+
+    #[test]
+    fn t39_build_failure_embed_full() {
+        // Given
+        let report = FailureReport {
+            message: "GitHub API error: 500".to_string(),
+            language: None,
+            execution: Some("github-trend-digest-abc12".to_string()),
+        };
+
+        // When
+        let embed = build_failure_embed(&report);
+
+        // Then
+        assert_eq!(embed.title, "GitHub Trending digest failed");
+        assert!(embed.description.contains("GitHub API error: 500"));
+        assert_eq!(embed.color, 0xD73A49);
+        assert_eq!(embed.url, "https://github.com/trending");
+        assert_eq!(
+            embed.fields,
+            vec![
+                field("Language", "all", true),
+                field("Execution", "github-trend-digest-abc12", true),
+            ]
+        );
+        assert_eq!(embed.footer.text, "GitHub Trending");
+    }
+
+    #[test]
+    fn t40_build_failure_embed_with_language_without_execution() {
+        // Given
+        let report = FailureReport {
+            message: "x".to_string(),
+            language: Some("rust".to_string()),
+            execution: None,
+        };
+
+        // When
+        let embed = build_failure_embed(&report);
+
+        // Then
+        assert_eq!(embed.fields, vec![field("Language", "rust", true)]);
+    }
+
+    #[test]
+    fn t41_build_failure_embed_truncates_long_multibyte_message() {
+        // Given
+        let report = failure_report(&"あ".repeat(5000));
+
+        // When
+        let embed = build_failure_embed(&report);
+
+        // Then
+        assert!(embed.description.chars().count() <= DESCRIPTION_LIMIT);
+        assert!(embed.description.ends_with('…'));
+        assert!(embed.char_count() <= TOTAL_CHARS_PER_MESSAGE);
+        assert!(embed.byte_count() <= MAX_EMBED_BYTES);
+    }
+
+    #[test]
+    fn t42_build_failure_embed_empty_message() {
+        // Given
+        let report = failure_report("");
+
+        // When
+        let embed = build_failure_embed(&report);
+
+        // Then
+        assert_eq!(embed.description, "(no error message)");
+    }
+
+    #[rstest]
+    #[case::ascii("GitHub API error: 500".to_string())]
+    #[case::multibyte("障害".repeat(3000))]
+    #[case::empty(String::new())]
+    #[case::ten_thousand("x".repeat(10_000))]
+    fn p7_build_failure_embed_respects_discord_limits(#[case] message: String) {
+        // Given
+        let report = FailureReport {
+            message,
+            language: Some("rust".to_string()),
+            execution: Some("exec-1".to_string()),
+        };
+
+        // When
+        let embed = build_failure_embed(&report);
+
+        // Then
+        assert!(embed.char_count() <= 6000);
+        assert!(embed.byte_count() <= MAX_EMBED_BYTES);
+        assert!(embed.description.chars().count() <= 4096);
     }
 }
