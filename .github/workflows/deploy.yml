@@ -1,0 +1,81 @@
+name: Deploy Cloud Run Job
+
+# Builds the image, updates the Cloud Run Job to it, and removes every other
+# image version. The Job is NOT executed here; Cloud Scheduler runs it.
+# See docs/DEPLOY_CLOUD_RUN.md.
+
+on:
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+# Serialize runs so that one run never deletes the image another run is deploying.
+concurrency:
+  group: deploy-cloud-run-job
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # Workload Identity Federation
+
+jobs:
+  deploy:
+    name: Build, Deploy, and Clean up
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/github-trend-digest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # One manifest per push: no provenance/SBOM attestations and a single
+      # platform, so the pushed digest is never an image index.
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+
+      # v3.0.1 is pinned exactly: Job support is beta and outside semver guarantees.
+      # Deploying must not run the Job (no wait option, no immediate execution).
+      - name: Deploy Cloud Run Job
+        uses: google-github-actions/deploy-cloudrun@v3.0.1
+        with:
+          job: github-trend-digest
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          region: ${{ vars.GCP_REGION }}
+          image: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          env_vars_update_strategy: overwrite
+          secrets_update_strategy: overwrite
+          secrets: |-
+            DISCORD_WEBHOOK_URL=github-trend-digest-discord-webhook-url:latest
+            GEMINI_API_KEY=github-trend-digest-gemini-api-key:latest
+            GITHUB_TOKEN=github-trend-digest-github-token:latest
+          flags: --service-account=${{ vars.RUNTIME_SERVICE_ACCOUNT }} --max-retries=0 --task-timeout=30m
+
+      # Runs only when the deploy step succeeded (default step condition).
+      - name: Delete every image except the deployed one
+        run: scripts/cleanup-old-images.sh "$IMAGE" "${{ steps.build.outputs.digest }}"

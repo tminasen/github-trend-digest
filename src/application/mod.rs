@@ -5,4 +5,4 @@
 pub mod use_cases;
 
 // Re-export commonly used types
-pub use use_cases::FetchAndSummarizeTrendingUseCase;
+pub use use_cases::{DigestOutcome, EmptyDigestReason, FetchAndSummarizeTrendingUseCase};

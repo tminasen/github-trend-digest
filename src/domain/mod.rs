@@ -4,9 +4,13 @@
 //! infrastructure concerns. It follows the principles of hexagonal architecture.
 pub mod entities;
 pub mod errors;
+pub mod failure;
 pub mod repositories;
 
 // Re-export commonly used types for convenience
 pub use entities::{Repository, RepositoryInsight, TrendingSummary};
 pub use errors::{AppError, AppResult};
-pub use repositories::{AiSummarizer, GithubApiClient, NotificationSender, TrendingRepository};
+pub use failure::{redact_secrets, FailureReport};
+pub use repositories::{
+    AiSummarizer, FailureNotifier, GithubApiClient, NotificationSender, TrendingRepository,
+};

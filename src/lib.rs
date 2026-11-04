@@ -16,8 +16,11 @@ pub mod infrastructure;
 pub mod presentation;
 
 // Re-export commonly used types for convenience
-pub use application::FetchAndSummarizeTrendingUseCase;
-pub use domain::{AppError, AppResult, GithubApiClient, Repository, TrendingSummary};
+pub use application::{DigestOutcome, EmptyDigestReason, FetchAndSummarizeTrendingUseCase};
+pub use domain::{
+    redact_secrets, AppError, AppResult, FailureNotifier, FailureReport, GithubApiClient,
+    Repository, TrendingSummary,
+};
 pub use infrastructure::{
     init_logging, AppConfig, DiscordNotificationSender, GeminiClient, GithubApiClientImpl,
     TrendingScraperClient,

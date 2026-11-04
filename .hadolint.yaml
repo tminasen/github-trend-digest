@@ -1,0 +1,6 @@
+# DL3008 (pin apt package versions) is ignored on purpose: ca-certificates is
+# installed from the debian:trixie-slim archive, and pinning an exact version
+# would break the build whenever the archive publishes a newer one.
+# The Dockerfile itself is unchanged.
+ignored:
+  - DL3008

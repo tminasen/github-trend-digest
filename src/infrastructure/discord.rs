@@ -5,9 +5,11 @@ use tracing::{debug, error, info, warn};
 
 mod embed;
 
-use embed::{build_embed, parse_retry_after, DiscordWebhookPayload};
+use embed::{build_embed, build_failure_embed, parse_retry_after, DiscordWebhookPayload};
 
-use crate::domain::{AppError, AppResult, NotificationSender, TrendingSummary};
+use crate::domain::{
+    AppError, AppResult, FailureNotifier, FailureReport, NotificationSender, TrendingSummary,
+};
 
 /// Number of times a rate-limited (429) message is re-sent.
 const MAX_RATE_LIMIT_RETRIES: u32 = 3;
@@ -102,6 +104,17 @@ impl NotificationSender for DiscordNotificationSender {
             .await?;
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl FailureNotifier for DiscordNotificationSender {
+    async fn notify_failure(&self, report: &FailureReport) -> AppResult<()> {
+        info!("Sending failure notification to Discord");
+        self.post_with_retry(&DiscordWebhookPayload {
+            embeds: vec![build_failure_embed(report)],
+        })
+        .await
     }
 }
 
@@ -396,5 +409,84 @@ mod tests {
             _ => panic!("Expected NotificationError"),
         }
         mock.assert_calls(4);
+    }
+
+    fn failure_report() -> FailureReport {
+        FailureReport {
+            message: "GitHub API error: 500".to_string(),
+            language: None,
+            execution: Some("github-trend-digest-abc12".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn t46_notify_failure_posts_one_failure_embed() {
+        // Given
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST).path("/").is_true(|req| {
+                embeds_len_is(req, 1)
+                    && body_json(req)
+                        .is_some_and(|b| b["embeds"][0]["title"] == "GitHub Trending digest failed")
+            });
+            then.status(204);
+        });
+        let sender = make_sender(&server);
+
+        // When
+        let result = sender.notify_failure(&failure_report()).await;
+
+        // Then
+        assert!(result.is_ok());
+        mock.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn t47_notify_failure_returns_error_on_500() {
+        // Given
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/");
+            then.status(500).body("oops");
+        });
+        let sender = make_sender(&server);
+
+        // When
+        let result = sender.notify_failure(&failure_report()).await;
+
+        // Then
+        match result {
+            Err(AppError::NotificationError(m)) => assert!(m.contains("500"), "{m}"),
+            other => panic!("expected NotificationError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t48_notify_failure_retries_after_429() {
+        // Given: first 429, then 204
+        let server = MockServer::start();
+        let mut rate_limited = server.mock(|when, then| {
+            when.method(POST).path("/");
+            then.status(429).body(r#"{"retry_after":0.2}"#);
+        });
+        let sender = make_sender(&server);
+
+        // When: the 429 mock is replaced by a 204 mock after the first request
+        let handle = tokio::spawn(async move { sender.notify_failure(&failure_report()).await });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while rate_limited.calls() < 1 {
+            assert!(std::time::Instant::now() < deadline, "429 was never hit");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        rate_limited.delete();
+        let ok = server.mock(|when, then| {
+            when.method(POST).path("/");
+            then.status(204);
+        });
+        let result = handle.await.unwrap();
+
+        // Then
+        assert!(result.is_ok());
+        ok.assert_calls(1);
     }
 }

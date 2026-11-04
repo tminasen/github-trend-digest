@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Test stub for docker. Records the call in $STUB_LOG and returns a canned manifest.
+#   DOCKER_STUB_MANIFEST_JSON : stdout
+#   DOCKER_STUB_EXIT          : exit code (default 0)
+echo "docker $*" >>"${STUB_LOG:?STUB_LOG is required}"
+printf '%s' "${DOCKER_STUB_MANIFEST_JSON:-}"
+exit "${DOCKER_STUB_EXIT:-0}"
