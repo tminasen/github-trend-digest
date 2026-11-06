@@ -23,7 +23,7 @@ line_of() { grep -n -F -- "$1" "$DEPLOY" | head -1 | cut -d: -f1; }
 
 @test "T28: secrets come from Secret Manager, not from GitHub" {
   run ! grep -q '\${{ *secrets\.' "$DEPLOY"
-  grep -q 'DISCORD_WEBHOOK_URL=github-trend-digest-discord-webhook-url:latest' "$DEPLOY"
+  grep -q 'DISCORD_WEBHOOK_URL=github-trend-digest-discord-url:latest' "$DEPLOY"
   grep -q 'GEMINI_API_KEY=github-trend-digest-gemini-api-key:latest' "$DEPLOY"
   grep -q 'GITHUB_TOKEN=github-trend-digest-github-token:latest' "$DEPLOY"
 }
