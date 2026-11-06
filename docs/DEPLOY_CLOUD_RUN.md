@@ -37,7 +37,7 @@ gcloud config set project "$PROJECT_ID"
 | 種類 | 名前 |
 |---|---|
 | Cloud Run Job / イメージ名 | `github-trend-digest` |
-| Secret | `github-trend-digest-discord-webhook-url` / `github-trend-digest-gemini-api-key` / `github-trend-digest-github-token` |
+| Secret | `github-trend-digest-discord-url` / `github-trend-digest-gemini-api-key` / `github-trend-digest-github-token` |
 
 GCP の識別子（プロジェクト ID・リージョンなど）は workflow に書かず、GitHub の Repository variables から読みます（8 章）。
 
@@ -78,7 +78,7 @@ gcloud artifacts repositories add-iam-policy-binding "$GAR_REPOSITORY" --locatio
   --member="serviceAccount:${DEPLOYER_SA}" --role="roles/artifactregistry.repoAdmin"
 
 # runtime: 各 secret の読み取り（7 章で secret を作った後に実行する）
-for s in discord-webhook-url gemini-api-key github-token; do
+for s in discord-url gemini-api-key github-token; do
   gcloud secrets add-iam-policy-binding "github-trend-digest-${s}" \
     --member="serviceAccount:${RUNTIME_SA}" --role="roles/secretmanager.secretAccessor"
 done
@@ -148,12 +148,12 @@ gcloud iam workload-identity-pools providers describe github-trend-digest \
 値は標準入力から渡し、シェルの履歴に残しません。
 
 ```bash
-for s in discord-webhook-url gemini-api-key github-token; do
+for s in discord-url gemini-api-key github-token; do
   gcloud secrets create "github-trend-digest-${s}" --replication-policy=automatic
 done
 
 # 例: 値を入力して Ctrl-D（改行を含めないこと）
-printf %s "$DISCORD_WEBHOOK_URL" | gcloud secrets versions add github-trend-digest-discord-webhook-url --data-file=-
+printf %s "$DISCORD_WEBHOOK_URL" | gcloud secrets versions add github-trend-digest-discord-url --data-file=-
 printf %s "$GEMINI_API_KEY"      | gcloud secrets versions add github-trend-digest-gemini-api-key --data-file=-
 printf %s "$GITHUB_PAT"          | gcloud secrets versions add github-trend-digest-github-token --data-file=-
 ```
@@ -249,7 +249,7 @@ echo "$DIGEST"
 gcloud run jobs create github-trend-digest --region="$REGION" \
   --image="${IMG}@${DIGEST}" \
   --service-account="$RUNTIME_SA" --max-retries=0 --task-timeout=30m \
-  --set-secrets="DISCORD_WEBHOOK_URL=github-trend-digest-discord-webhook-url:latest,GEMINI_API_KEY=github-trend-digest-gemini-api-key:latest,GITHUB_TOKEN=github-trend-digest-github-token:latest"
+  --set-secrets="DISCORD_WEBHOOK_URL=github-trend-digest-discord-url:latest,GEMINI_API_KEY=github-trend-digest-gemini-api-key:latest,GITHUB_TOKEN=github-trend-digest-github-token:latest"
 
 # 実行して確認する（Discord にまとめが届く）
 gcloud run jobs execute github-trend-digest --region="$REGION" --wait

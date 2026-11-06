@@ -71,7 +71,7 @@ jobs:
           env_vars_update_strategy: overwrite
           secrets_update_strategy: overwrite
           secrets: |-
-            DISCORD_WEBHOOK_URL=github-trend-digest-discord-webhook-url:latest
+            DISCORD_WEBHOOK_URL=github-trend-digest-discord-url:latest
             GEMINI_API_KEY=github-trend-digest-gemini-api-key:latest
             GITHUB_TOKEN=github-trend-digest-github-token:latest
           flags: --service-account=${{ vars.RUNTIME_SERVICE_ACCOUNT }} --max-retries=0 --task-timeout=30m
